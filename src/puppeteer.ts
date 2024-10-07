@@ -1,102 +1,43 @@
-import puppeteer from "puppeteer";
+import puppeteer, { Page } from "puppeteer";
 import fs from "fs-extra";
 
-// Interface for the scraped data
-export interface ScrapedData {
-  timestamp: string;
-  october30: string;
-  november16: string;
-}
-
-const SITE = "https://www.goindigo.in/";
+const INDIGO_SITE = "https://www.goindigo.in/";
+const TEN_MINUTES_IN_MS = 600000;
 
 // Function to perform actions on the webpage and extract data
-async function visitPageAndStoreData(): Promise<void> {
+export async function visitPageAndStoreData(): Promise<void> {
   try {
     // Launch the browser
-    const browser = await puppeteer.launch({ headless: true });
+    const browser = await puppeteer.launch(/* { headless: true } */);
     const page = await browser.newPage();
-
     // Go to the target page
-    await page.goto(SITE, { waitUntil: "networkidle2" });
+    await page.goto(INDIGO_SITE, { waitUntil: "load" });
+    await page.setViewport({ width: 1920, height: 1024 });
 
-    // Extract data from the page (replace with your own logic)
-    // const extractedData = await page.evaluate(() => {
-    // });
+    const html = await page.$("body");
 
-    await page.click('[aria-label="sourceCity"]');
+    console.log({ html });
 
-    await page.waitForSelector(".city-selection");
+    await closeFlightModal(page);
 
-    await page.waitForSelector('[aria-label="sourceCity"] input');
+    await page.waitForSelector(".bookingmf-container__tabs--content");
 
-    await page.type('[aria-label="sourceCity"] input', "Almaty");
-
-    const searchResult = await page.$$eval(
-      ".city-selection__list-item-wrapper .body-extra-small-regular",
-      (searchResult) =>
-        searchResult.filter((item) =>
-          item.textContent?.includes("Almaty International Airport")
-        )
-    );
-
-    // @ts-ignore
-    searchResult[0].click();
+    await selectAlmaty(page);
 
     await delay(2000);
 
-    await page.waitForSelector('[aria-label="destinationCity"]');
-
-    await page.waitForSelector(".city-selection");
-
-    await page.waitForSelector('[aria-label="destinationCity"] input');
-
-    await page.type('[aria-label="destinationCity"] input', "Delhi");
-
-    const searchResult2 = await page.$$eval(
-      ".city-selection__list-item-wrapper .body-extra-small-regular",
-      (searchResult) =>
-        searchResult.filter((item) =>
-          item.textContent?.includes("Indira Gandhi International Airport")
-        )
-    );
-
-    // @ts-ignore
-    searchResult2[0].click();
+    await selectDeli(page);
 
     await delay(2000);
 
-    await page.click('[aria-label="departureDate"]');
+    await openDates(page);
 
-    await page.waitForSelector(".city-selection");
+    await delay(2000);
 
-    await page.click(".rdrNextPrevButton");
-
-    const dates = await page.$$eval(".rdrMonth", (searchResult) =>
-      searchResult.reduce(
-        (result, item) => {
-          const key = item
-            .querySelector(".rdrMonthName")
-            ?.textContent?.includes("October")
-            ? "october30"
-            : "november16";
-
-          result[key] =
-            [...item.querySelectorAll(".rdrDays button")].find(
-              (item) => item.querySelector(".date")?.textContent === "16"
-            )?.nextElementSibling?.textContent ?? "";
-
-          return result;
-        },
-        {
-          october30: "",
-          november16: "",
-        }
-      )
-    );
-
+    const prices = await extractPrices(page);
+    console.log({ prices });
     // Read existing data from the file (if any)
-    let fileData: ScrapedData[] = [];
+    let fileData: Data[] = [];
 
     if (await fs.pathExists("data.json")) {
       const existingData = await fs.readFile("data.json", "utf-8");
@@ -104,10 +45,7 @@ async function visitPageAndStoreData(): Promise<void> {
     }
 
     // Add the new data with a timestamp
-    fileData.push({
-      timestamp: new Date().toISOString(),
-      ...dates,
-    });
+    fileData.push(prices);
 
     // Save the updated data to the file
     await fs.writeFile("data.json", JSON.stringify(fileData, null, 2));
@@ -124,13 +62,129 @@ async function visitPageAndStoreData(): Promise<void> {
 // Schedule the Puppeteer task to run every 10 minutes
 export function schedulePuppeteerTask(): void {
   visitPageAndStoreData(); // Run immediately
-  setInterval(visitPageAndStoreData, 600000 * 2); // 600,000 ms = 10 minutes
+  setInterval(visitPageAndStoreData, TEN_MINUTES_IN_MS * 2); // 600,000 ms = 10 minutes
 }
 
 function delay(time: number) {
   return new Promise(function (resolve) {
     setTimeout(resolve, time);
   });
+}
+
+export type Data = {
+  timestamp: string;
+  months: Month[];
+};
+
+type Month = {
+  name: string | null | undefined;
+  days: Day[];
+};
+
+type Day = {
+  date: string | null | undefined;
+  price: string | null | undefined;
+};
+
+async function extractPrices(page: Page) {
+  const result: Data = {
+    timestamp: new Date().toISOString(),
+    months: [],
+  };
+
+  await page.$$eval(".rdrMonth", (months) => {
+    months.forEach((month) => {
+      const name = month.querySelector(".rdrMonthName")?.textContent;
+
+      const data: Month = {
+        name,
+        days: [],
+      };
+
+      const days = month.querySelectorAll(".custom-calendar-day");
+
+      days.forEach((day) => {
+        const date = day.querySelector(".date")?.textContent;
+        const price = day.querySelector(".price")?.textContent;
+        const value = { date, price };
+
+        data.days.push(value);
+      });
+
+      result.months.push(data);
+    });
+  });
+
+  return result;
+}
+
+async function openDates(page: Page) {
+  // await page.click('[aria-label="departureDate"]');
+  await page.locator('::-p-aria([aria-label="departureDate"])').click();
+
+  await page.waitForSelector(".city-selection");
+}
+
+async function closeFlightModal(page: Page) {
+  const flightModal = await page.$(".flight-modal");
+  console.log({ flightModal });
+  if (flightModal) {
+    await page.click(".flight-modal .flight-close");
+  }
+}
+
+async function selectAlmaty(page: Page) {
+  const blocks = await page.$$("search-widget-form-body__from");
+
+  const [sourceCity, destinationCity] = blocks;
+
+  await sourceCity?.click();
+
+  await delay(2000);
+
+  const citySelection = await page.$(".city-selection");
+  console.log({ citySelection, sourceCity, blocks });
+  await page.waitForSelector(".city-selection");
+
+  const input = await sourceCity.$("input");
+
+  await input?.type("Almaty");
+
+  const firstResult = await page.$(".city-selection__list-item--info");
+
+  // const firstResult = await page.$$eval(
+  //   ".city-selection__list-item-wrapper .body-extra-small-regular",
+  //   (searchResult) =>
+  //     searchResult.find((item) =>
+  //       item.textContent?.includes("Almaty International Airport")
+  //     )
+  // );
+
+  //@ts-ignore
+  firstResult?.click();
+}
+
+async function selectDeli(page: Page) {
+  const destinationCity = await page.$('[aria-label="destinationCity"]');
+
+  await destinationCity?.click();
+
+  await page.waitForSelector(".city-selection");
+
+  await page.type('::-p-aria([aria-label="destinationCity"] input)', "Delhi");
+
+  const destination = await page.$$eval(
+    ".city-selection__list-item-wrapper .body-extra-small-regular",
+    (searchResult) =>
+      searchResult.find((item) =>
+        item.textContent?.includes("Indira Gandhi International Airport")
+      )
+  );
+
+  //@ts-ignore
+  destination?.click();
+
+  await delay(2000);
 }
 
 // Extract data from the page (customize this as needed)

@@ -16,8 +16,8 @@
   },
   "scripts": {
     "build": "npx tsc",
-    "start": "node dist/app.js",
-    "test": "node dist/test.js"
+    "start": "npx tsc && node dist/app.js",
+    "test": "npx tsc && node dist/test.js"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
